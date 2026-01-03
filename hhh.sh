@@ -13,7 +13,7 @@ WHITE="\e[0m"
 YELLOW="\e[33m"
 GREEN="\e[32m"
 BLUE="\e[34m"
-
+RED="\e[31m"
 
 clear
 
@@ -48,6 +48,18 @@ case "$confirm" in
         ;;
 esac
 
+# 添加网络检测函数
+check_network() {
+    echo -e "${PINK}正在检测网络连接...${WHITE}"
+    if ping -c 2 -W 3 mirrors.tuna.tsinghua.edu.cn > /dev/null 2>&1; then
+        echo -e "${GREEN}[网络连接正常]${WHITE}"
+        return 0
+    else
+        echo -e "${RED}[网络连接失败]${WHITE}"
+        return 1
+    fi
+}
+
 # Start of the install procedure
 cd ~
 
@@ -55,58 +67,145 @@ cd ~
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[1/11]${PINK} ==> 正在更新系统软件包\n---------------------------------------------------------------------\n${WHITE}"
 sudo pacman -Syu --noconfirm
 
-# Launch auto-setup script and download all the dotfiles (使用国内镜像)
+# 尝试多个镜像源下载远程脚本
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[2/11]${PINK} ==> 设置终端\n---------------------------------------------------------------------\n${WHITE}"
 sleep 0.5
-bash -c "$(curl -fSL https://ghproxy.com/https://raw.githubusercontent.com/ViegPhunt/auto-setup-LT/main/arch.sh)"
+
+# 定义多个镜像源（按优先级排列）
+MIRRORS=(
+    "https://ghproxy.com/https://raw.githubusercontent.com/ViegPhunt/auto-setup-LT/main/arch.sh"
+    "https://raw.fastgit.org/ViegPhunt/auto-setup-LT/main/arch.sh"
+    "https://raw.githubusercontents.com/ViegPhunt/auto-setup-LT/main/arch.sh"
+    "https://cdn.jsdelivr.net/gh/ViegPhunt/auto-setup-LT@main/arch.sh"
+    "https://raw.githubusercontent.com/ViegPhunt/auto-setup-LT/main/arch.sh"  # 原始源（最后尝试）
+)
+
+# 检查网络连接
+if ! check_network; then
+    echo -e "${RED}[错误]${PINK} ==> 网络连接失败，无法继续安装。${WHITE}"
+    echo -e "${YELLOW}请检查："
+    echo "1. 网络连接是否正常"
+    echo "2. 是否配置了代理（如有需要）"
+    echo "3. 尝试手动配置pacman镜像源后再运行此脚本${WHITE}"
+    exit 1
+fi
+
+# 尝试不同的镜像源
+success=false
+for mirror in "${MIRRORS[@]}"; do
+    echo -e "${BLUE}[尝试]${PINK} ==> 使用镜像源: $(basename $(dirname $(dirname "$mirror")))${WHITE}"
+    
+    # 添加超时和重试机制
+    if timeout 30 curl -fSL --retry 2 --retry-delay 3 --connect-timeout 10 "$mirror" > /tmp/arch_setup.sh 2>/dev/null; then
+        echo -e "${GREEN}[成功]${PINK} ==> 脚本下载完成${WHITE}"
+        
+        # 检查下载的文件是否有效
+        if [[ -s /tmp/arch_setup.sh ]] && head -n 1 /tmp/arch_setup.sh | grep -q "bash\|sh"; then
+            echo -e "${GREEN}[执行]${PINK} ==> 开始执行安装脚本${WHITE}"
+            chmod +x /tmp/arch_setup.sh
+            bash /tmp/arch_setup.sh
+            success=true
+            break
+        else
+            echo -e "${YELLOW}[警告]${PINK} ==> 下载的文件无效，尝试下一个镜像源${WHITE}"
+            continue
+        fi
+    else
+        echo -e "${YELLOW}[失败]${PINK} ==> 当前镜像源不可用${WHITE}"
+    fi
+done
+
+if [[ "$success" == false ]]; then
+    echo -e "${RED}[错误]${PINK} ==> 所有镜像源都失败，无法下载安装脚本${WHITE}"
+    echo -e "${YELLOW}备用方案："
+    echo "1. 手动下载安装脚本:"
+    echo "   curl -fSL https://ghproxy.com/https://raw.githubusercontent.com/ViegPhunt/auto-setup-LT/main/arch.sh -o arch.sh"
+    echo "   chmod +x arch.sh && ./arch.sh"
+    echo "2. 或稍后再试"
+    echo "3. 检查您的网络设置和代理配置${WHITE}"
+    
+    read -p "是否继续其他安装步骤？(部分功能可能不可用) [y/N]: " -r continue_without
+    if [[ ! "$continue_without" =~ ^[Yy]$ ]]; then
+        exit 1
+    fi
+fi
 
 # Making all the scripts executable
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[3/11]${PINK} ==> 设置脚本可执行权限\n---------------------------------------------------------------------\n${WHITE}"
-sudo chmod +x ~/dotfiles/.config/viegphunt/*
+if [[ -d ~/dotfiles/.config/viegphunt ]]; then
+    sudo chmod +x ~/dotfiles/.config/viegphunt/*
+else
+    echo -e "${YELLOW}[跳过]${PINK} ==> dotfiles目录不存在，跳过此步骤${WHITE}"
+fi
 
-# Download & move the wallpapers to the right directory (使用国内镜像)
+# Download & move the wallpapers to the right directory
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[4/11]${PINK} ==> 下载壁纸\n---------------------------------------------------------------------\n${WHITE}"
-git clone --depth 1 https://ghproxy.com/https://github.com/ViegPhunt/Wallpaper-Collection.git ~/Wallpaper-Collection
-mkdir -p ~/Pictures/Wallpapers
-mv ~/Wallpaper-Collection/Wallpapers/* ~/Pictures/Wallpapers
-rm -rf ~/Wallpaper-Collection
+if timeout 60 git clone --depth 1 https://ghproxy.com/https://github.com/ViegPhunt/Wallpaper-Collection.git ~/Wallpaper-Collection 2>/dev/null; then
+    mkdir -p ~/Pictures/Wallpapers
+    mv ~/Wallpaper-Collection/Wallpapers/* ~/Pictures/Wallpapers 2>/dev/null || true
+    rm -rf ~/Wallpaper-Collection
+else
+    echo -e "${YELLOW}[跳过]${PINK} ==> 壁纸下载失败，跳过此步骤${WHITE}"
+    echo -e "${BLUE}[提示]${PINK} ==> 您可以稍后手动下载壁纸${WHITE}"
+fi
 
 # Install the required packages
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[5/11]${PINK} ==> 安装软件包\n---------------------------------------------------------------------\n${WHITE}"
 sleep 0.5
-~/dotfiles/.config/viegphunt/install_archpkg.sh
+if [[ -f ~/dotfiles/.config/viegphunt/install_archpkg.sh ]]; then
+    ~/dotfiles/.config/viegphunt/install_archpkg.sh
+else
+    echo -e "${YELLOW}[跳过]${PINK} ==> 安装脚本不存在，跳过此步骤${WHITE}"
+    echo -e "${BLUE}[提示]${PINK} ==> 请确保已成功下载dotfiles${WHITE}"
+fi
 
 # Enable bluetooth & networkmanager
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[6/11]${PINK} ==> 启用蓝牙和网络管理器\n---------------------------------------------------------------------\n${WHITE}"
 sleep 0.5
-sudo systemctl enable --now bluetooth
-sudo systemctl enable --now NetworkManager
+sudo systemctl enable --now bluetooth 2>/dev/null || echo -e "${YELLOW}[警告]${PINK} ==> 蓝牙服务启用失败${WHITE}"
+sudo systemctl enable --now NetworkManager 2>/dev/null || echo -e "${YELLOW}[警告]${PINK} ==> NetworkManager启用失败${WHITE}"
 
 # Set Ghostty as default terminal emulator for Nemo
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[7/11]${PINK} ==> 为 Nemo 设置 Ghostty 为默认终端\n---------------------------------------------------------------------\n${WHITE}"
-gsettings set org.cinnamon.desktop.default-applications.terminal exec ghostty
+if command -v gsettings > /dev/null 2>&1; then
+    gsettings set org.cinnamon.desktop.default-applications.terminal exec ghostty 2>/dev/null || echo -e "${YELLOW}[跳过]${PINK} ==> 未找到gsettings或Nemo${WHITE}"
+else
+    echo -e "${YELLOW}[跳过]${PINK} ==> 未安装gsettings${WHITE}"
+fi
 
 # Apply fonts
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[8/11]${PINK} ==> 应用字体\n---------------------------------------------------------------------\n${WHITE}"
-fc-cache -fv
+fc-cache -fv 2>/dev/null || echo -e "${YELLOW}[警告]${PINK} ==> 字体缓存更新失败${WHITE}"
 
 # Set cursor
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[9/11]${PINK} ==> 设置鼠标指针\n---------------------------------------------------------------------\n${WHITE}"
-~/dotfiles/.config/viegphunt/setcursor.sh
+if [[ -f ~/dotfiles/.config/viegphunt/setcursor.sh ]]; then
+    ~/dotfiles/.config/viegphunt/setcursor.sh
+else
+    echo -e "${YELLOW}[跳过]${PINK} ==> setcursor.sh不存在${WHITE}"
+fi
 
 # Stow
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[10/11]${PINK} ==> 部署配置文件\n---------------------------------------------------------------------\n${WHITE}"
-cd ~/dotfiles
-stow -t ~ .
-cd ~
+if [[ -d ~/dotfiles ]] && command -v stow > /dev/null 2>&1; then
+    cd ~/dotfiles
+    stow -t ~ . 2>/dev/null || echo -e "${YELLOW}[警告]${PINK} ==> stow执行失败${WHITE}"
+    cd ~
+else
+    echo -e "${YELLOW}[跳过]${PINK} ==> dotfiles目录不存在或未安装stow${WHITE}"
+fi
 
 # Check display manager
 echo -e "${PINK}\n---------------------------------------------------------------------\n${YELLOW}[11/11]${PINK} ==> 检查显示管理器\n---------------------------------------------------------------------\n${WHITE}"
 if [[ ! -e /etc/systemd/system/display-manager.service ]]; then
-    sudo systemctl enable sddm
-    echo -e "[Theme]\nCurrent=sddm-astronaut-theme" | sudo tee -a /etc/sddm.conf
-    sudo sed -i 's|astronaut.conf|purple_leaves.conf|' /usr/share/sddm/themes/sddm-astronaut-theme/metadata.desktop
-    echo -e "\n${PINK}SDDM 已启用。"
+    if command -v sddm > /dev/null 2>&1; then
+        sudo systemctl enable sddm 2>/dev/null
+        echo -e "[Theme]\nCurrent=sddm-astronaut-theme" | sudo tee -a /etc/sddm.conf > /dev/null 2>&1
+        sudo sed -i 's|astronaut.conf|purple_leaves.conf|' /usr/share/sddm/themes/sddm-astronaut-theme/metadata.desktop 2>/dev/null || true
+        echo -e "\n${PINK}SDDM 已启用。"
+    else
+        echo -e "${YELLOW}[跳过]${PINK} ==> 未安装SDDM${WHITE}"
+    fi
 fi
 
 # Wait a little just for the last message
@@ -134,5 +233,12 @@ echo -e "\n
  *                                                                   *
  *                  \e[4m祝您使用 Hyprland 愉快！${WHITE}                 *
  *********************************************************************
- \n
+\n
 "
+
+# 显示安装状态总结
+echo -e "${PINK}=== 安装状态总结 ===${WHITE}"
+echo -e "${BLUE}[提示]${WHITE} 如果某些步骤失败，您可以："
+echo "1. 手动运行失败的步骤"
+echo "2. 检查网络连接后重新运行脚本"
+echo "3. 访问 https://github.com/ViegPhunt/auto-setup-LT 查看文档"
